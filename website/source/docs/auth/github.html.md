@@ -26,7 +26,40 @@ $ vault auth -method=github token=<api token>
 
 #### Via the API
 
-The endpoint for the GitHub login is `/login`.
+The endpoint for the GitHub login is `auth/github/login`. 
+
+The `github` mountpoint value in the url is the default mountpoint value. If you have mounted the `github` backend with a different mountpoint, use that value.
+
+The `token` should be sent in the POST body encoded as JSON.
+
+```shell
+$ curl $VAULT_ADDR/v1/auth/github/login \
+    -d '{ "token": "your_github_personal_access_token" }'
+```
+
+The response will be in JSON. For example:
+
+```javascript
+{
+  "lease_id": "",
+  "renewable": false,
+  "lease_duration": 0,
+  "data": null,
+  "warnings": null,
+  "auth": {
+    "client_token": "c4f280f6-fdb2-18eb-89d3-589e2e834cdb",
+    "policies": [
+      "root"
+    ],
+    "metadata": {
+      "org": "test_org",
+      "username": "rajanadar",
+    },
+    "lease_duration": 0,
+    "renewable": false
+  }
+}
+```
 
 ## Configuration
 
@@ -70,17 +103,19 @@ Success! Data written to: auth/github/config
 
 After configuring that, you must map the teams of that organization to
 policies within Vault. Use the `map/teams/<team>` endpoints to do that.
+Team names must be slugified, so if your team name is: `Some Amazing Team`, 
+you will need to include it as: `some-amazing-team`. 
 Example:
 
 ```
-$ vault write auth/github/map/teams/owners value=root
-Success! Data written to: auth/github/map/teams/owners
+$ vault write auth/github/map/teams/admins value=root
+Success! Data written to: auth/github/map/teams/admins
 ```
 
-The above would make anyone in the "owners" team a root user in Vault
+The above would make anyone in the "admins" team a root user in Vault
 (not recommended).
 
-You can then auth with a user that is a member of the "owners" team using a Personal Access Token with the `read:org` scope.
+You can then auth with a user that is a member of the "admins" team using a Personal Access Token with the `read:org` scope.
 
 ```
 $ vault auth -method=github token=000000905b381e723b3d6a7d52f148a5d43c4b45

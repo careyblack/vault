@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"sort"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/credentials/ec2rolecreds"
+	"github.com/aws/aws-sdk-go/aws/ec2metadata"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 )
@@ -23,16 +25,17 @@ import (
 type S3Backend struct {
 	bucket string
 	client *s3.S3
+	logger *log.Logger
 }
 
 // newS3Backend constructs a S3 backend using a pre-existing
 // bucket. Credentials can be provided to the backend, sourced
 // from the environment, AWS credential files or by IAM role.
-func newS3Backend(conf map[string]string) (Backend, error) {
+func newS3Backend(conf map[string]string, logger *log.Logger) (Backend, error) {
 
-	bucket, ok := conf["bucket"]
-	if !ok {
-		bucket = os.Getenv("AWS_S3_BUCKET")
+	bucket := os.Getenv("AWS_S3_BUCKET")
+	if bucket == "" {
+		bucket = conf["bucket"]
 		if bucket == "" {
 			return nil, fmt.Errorf("'bucket' must be set")
 		}
@@ -50,13 +53,13 @@ func newS3Backend(conf map[string]string) (Backend, error) {
 	if !ok {
 		session_token = ""
 	}
-	endpoint, ok := conf["endpoint"]
-	if !ok {
-		endpoint = os.Getenv("AWS_S3_ENDPOINT")
+	endpoint := os.Getenv("AWS_S3_ENDPOINT")
+	if endpoint == "" {
+		endpoint = conf["endpoint"]
 	}
-	region, ok := conf["region"]
-	if !ok {
-		region = os.Getenv("AWS_DEFAULT_REGION")
+	region := os.Getenv("AWS_DEFAULT_REGION")
+	if region == "" {
+		region = conf["region"]
 		if region == "" {
 			region = "us-east-1"
 		}
@@ -70,7 +73,7 @@ func newS3Backend(conf map[string]string) (Backend, error) {
 		}},
 		&credentials.EnvProvider{},
 		&credentials.SharedCredentialsProvider{Filename: "", Profile: ""},
-		&ec2rolecreds.EC2RoleProvider{},
+		&ec2rolecreds.EC2RoleProvider{Client: ec2metadata.New(session.New())},
 	})
 
 	s3conn := s3.New(session.New(&aws.Config{
@@ -87,6 +90,7 @@ func newS3Backend(conf map[string]string) (Backend, error) {
 	s := &S3Backend{
 		client: s3conn,
 		bucket: bucket,
+		logger: logger,
 	}
 	return s, nil
 }
@@ -116,7 +120,6 @@ func (s *S3Backend) Get(key string) (*Entry, error) {
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 	})
-
 	if awsErr, ok := err.(awserr.RequestFailure); ok {
 		// Return nil on 404s, error on anything else
 		if awsErr.StatusCode() == 404 {
@@ -124,6 +127,12 @@ func (s *S3Backend) Get(key string) (*Entry, error) {
 		} else {
 			return nil, err
 		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("got nil response from S3 but no error")
 	}
 
 	data := make([]byte, *resp.ContentLength)
@@ -167,6 +176,9 @@ func (s *S3Backend) List(prefix string) ([]string, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("nil response from S3 but no error")
 	}
 
 	keys := []string{}

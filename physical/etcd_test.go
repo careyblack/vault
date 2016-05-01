@@ -2,11 +2,13 @@ package physical
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"testing"
 	"time"
 
-	"github.com/coreos/go-etcd/etcd"
+	"github.com/coreos/etcd/client"
+	"golang.org/x/net/context"
 )
 
 func TestEtcdBackend(t *testing.T) {
@@ -15,19 +17,37 @@ func TestEtcdBackend(t *testing.T) {
 		t.SkipNow()
 	}
 
-	client := etcd.NewClient([]string{addr})
-	if !client.SyncCluster() {
+	cfg := client.Config{
+		Endpoints: []string{addr},
+		Transport: client.DefaultTransport,
+	}
+
+	c, err := client.New(cfg)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), client.DefaultRequestTimeout)
+	syncErr := c.Sync(ctx)
+	cancel()
+	if syncErr != nil {
 		t.Fatalf("err: %v", EtcdSyncClusterError)
 	}
 
+	kAPI := client.NewKeysAPI(c)
+
 	randPath := fmt.Sprintf("/vault-%d", time.Now().Unix())
 	defer func() {
-		if _, err := client.Delete(randPath, true); err != nil {
+		delOpts := &client.DeleteOptions{
+			Recursive: true,
+		}
+		if _, err := kAPI.Delete(context.Background(), randPath, delOpts); err != nil {
 			t.Fatalf("err: %v", err)
 		}
 	}()
 
-	b, err := NewBackend("etcd", map[string]string{
+	logger := log.New(os.Stderr, "", log.LstdFlags)
+	b, err := NewBackend("etcd", logger, map[string]string{
 		"address": addr,
 		"path":    randPath,
 	})

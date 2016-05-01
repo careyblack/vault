@@ -25,7 +25,7 @@ mechanisms (covered later), the dynamic secret can be revoked right after
 use, minimizing the amount of time the secret existed.
 
 -> **Note:** Before starting this page, please register for an
-[AWS account](http://aws.amazon.com). We won't be using any features that
+[AWS account](https://aws.amazon.com). We won't be using any features that
 cost money, so you shouldn't be charged for anything. However, we're not
 responsible for any charges you may incur.
 
@@ -148,7 +148,7 @@ outputted from `vault read` when you ran it:
 
 ```
 $ vault revoke aws/creds/deploy/0d042c53-aa8a-7ce7-9dfd-310351c465e5
-Key revoked with ID 'aws/creds/deploy/0d042c53-aa8a-7ce7-9dfd-310351c465e5'.
+Success! Revoked the secret with ID 'aws/creds/deploy/0d042c53-aa8a-7ce7-9dfd-310351c465e5', if it existed.
 ```
 
 Done! If you look at your AWS account, you'll notice that no IAM users

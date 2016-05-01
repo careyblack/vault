@@ -2,15 +2,21 @@ package vault
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
 	"fmt"
+	"log"
 	"net"
+	"os"
 	"os/exec"
 	"testing"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/hashicorp/go-uuid"
 	"github.com/hashicorp/vault/audit"
+	"github.com/hashicorp/vault/helper/salt"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
 	"github.com/hashicorp/vault/physical"
@@ -56,8 +62,27 @@ oOyBJU/HMVvBfv4g+OVFLVgSwwm6owwsouZ0+D/LasbuHqYyqYqdyPJQYzWA2Y+F
 
 // TestCore returns a pure in-memory, uninitialized core for testing.
 func TestCore(t *testing.T) *Core {
+	return TestCoreWithSeal(t, nil)
+}
+
+// TestCoreWithSeal returns a pure in-memory, uninitialized core with the
+// specified seal for testing.
+func TestCoreWithSeal(t *testing.T, testSeal Seal) *Core {
 	noopAudits := map[string]audit.Factory{
 		"noop": func(config *audit.BackendConfig) (audit.Backend, error) {
+			view := &logical.InmemStorage{}
+			view.Put(&logical.StorageEntry{
+				Key:   "salt",
+				Value: []byte("foo"),
+			})
+			var err error
+			config.Salt, err = salt.NewSalt(view, &salt.Config{
+				HMAC:     sha256.New,
+				HMACType: "hmac-sha256",
+			})
+			if err != nil {
+				t.Fatalf("error getting new salt: %v", err)
+			}
 			return &noopAudit{
 				Config: config,
 			}, nil
@@ -81,14 +106,21 @@ func TestCore(t *testing.T) *Core {
 		logicalBackends[backendName] = backendFactory
 	}
 
-	physicalBackend := physical.NewInmem()
-	c, err := NewCore(&CoreConfig{
+	logger := log.New(os.Stderr, "", log.LstdFlags)
+	physicalBackend := physical.NewInmem(logger)
+	conf := &CoreConfig{
 		Physical:           physicalBackend,
 		AuditBackends:      noopAudits,
 		LogicalBackends:    logicalBackends,
 		CredentialBackends: noopBackends,
 		DisableMlock:       true,
-	})
+		Logger:             logger,
+	}
+	if testSeal != nil {
+		conf.Seal = testSeal
+	}
+
+	c, err := NewCore(conf)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -102,7 +134,7 @@ func TestCoreInit(t *testing.T, core *Core) ([]byte, string) {
 	result, err := core.Initialize(&SealConfig{
 		SecretShares:    1,
 		SecretThreshold: 1,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -127,6 +159,40 @@ func TestCoreUnsealed(t *testing.T) (*Core, []byte, string) {
 	}
 
 	return core, key, token
+}
+
+// TestCoreWithTokenStore returns an in-memory core that has a token store
+// mounted, so that logical token functions can be used
+func TestCoreWithTokenStore(t *testing.T) (*Core, *TokenStore, []byte, string) {
+	c, key, root := TestCoreUnsealed(t)
+
+	me := &MountEntry{
+		Path:        "token/",
+		Type:        "token",
+		Description: "token based credentials",
+	}
+
+	meUUID, err := uuid.GenerateUUID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	me.UUID = meUUID
+
+	view := NewBarrierView(c.barrier, credentialBarrierPrefix+me.UUID+"/")
+
+	tokenstore, _ := c.newCredentialBackend("token", c.mountEntrySysView(me), view, nil)
+	ts := tokenstore.(*TokenStore)
+
+	router := NewRouter()
+	router.Mount(ts, "auth/token/", &MountEntry{UUID: ""}, ts.view)
+
+	subview := c.systemBarrierView.SubView(expirationSubPath)
+	logger := log.New(os.Stderr, "", log.LstdFlags)
+
+	exp := NewExpirationManager(router, subview, ts, logger)
+	ts.SetExpirationManager(exp)
+
+	return c, ts, key, root
 }
 
 // TestKeyCopy is a silly little function to just copy the key so that
@@ -247,6 +313,10 @@ type noopAudit struct {
 	Config *audit.BackendConfig
 }
 
+func (n *noopAudit) GetHash(data string) string {
+	return n.Config.Salt.GetIdentifiedHMAC(data)
+}
+
 func (n *noopAudit) LogRequest(a *logical.Auth, r *logical.Request, e error) error {
 	return nil
 }
@@ -267,6 +337,10 @@ func (n *rawHTTP) HandleRequest(req *logical.Request) (*logical.Response, error)
 	}, nil
 }
 
+func (n *rawHTTP) HandleExistenceCheck(req *logical.Request) (bool, bool, error) {
+	return false, false, nil
+}
+
 func (n *rawHTTP) SpecialPaths() *logical.Paths {
 	return &logical.Paths{Unauthenticated: []string{"*"}}
 }
@@ -280,4 +354,25 @@ func (n *rawHTTP) System() logical.SystemView {
 
 func (n *rawHTTP) Cleanup() {
 	// noop
+}
+
+func GenerateRandBytes(length int) ([]byte, error) {
+	if length < 0 {
+		return nil, fmt.Errorf("length must be >= 0")
+	}
+
+	buf := make([]byte, length)
+	if length == 0 {
+		return buf, nil
+	}
+
+	n, err := rand.Read(buf)
+	if err != nil {
+		return nil, err
+	}
+	if n != length {
+		return nil, fmt.Errorf("unable to read %d bytes; only read %d", length, n)
+	}
+
+	return buf, nil
 }
